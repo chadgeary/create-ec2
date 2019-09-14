@@ -141,8 +141,8 @@ echo $($LOGTIME) 'aws ec2 run-instances submitting task' | tee -a $LOGFILE
 # submit aws task
 instanceid=$(aws ec2 run-instances --image-id $amiid --count 1 --instance-type $instancetype --security-group-ids $secgroup --key-name "$keypair" --subnet-id $subnet --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=$vmname}]" --query 'Instances[*].[InstanceId]' --output=text)
 
-echo $($LOGTIME) "aws ec2 run-instances submitted, assigning $elasticip to instanceid $instanceid" | tee -a $LOGFILE
-aws ec2 associate-address --instance-id $instanceid --public-ip $elasticip
+echo $($LOGTIME) "aws ec2 run-instances submitted, assign $elasticip to instanceid $instanceid with command:
+aws ec2 associate-address --instance-id $instanceid --public-ip $elasticip"
 
 # done
 echo $($LOGTIME) 'complete, exiting' | tee -a $LOGFILE
