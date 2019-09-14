@@ -1,0 +1,150 @@
+#!/bin/bash
+# create-ec2
+LOGFILE=~/.log/create-ec2.log
+LOGTIME=$(eval echo date +"%F_%T:%N")
+
+# logdir
+mkdir -p ~/.log
+
+# start
+echo "$($LOGTIME) $0 start" | tee -a $LOGFILE
+
+# check for aws cli
+which aws 1>/dev/null
+if [[ $? -ne 0 ]]
+then
+	echo "$($LOGTIME) no aws cli installed, exiting" | tee -a $LOGFILE
+	exit 1
+fi
+
+# check aws cli profile set
+aws configure list --profile default | grep -v 'profile' | grep '<not set>'
+if [[ $? -eq 0 ]]
+then
+	echo "$($LOGTIME) please run 'aws configure --profile default' and ensure access id / key is set and region is us-east-2, exiting" | tee -a $LOGFILE
+	exit 1
+fi
+
+# allocate ip
+while [[ -z $allocateip ]]
+do
+	read -p 'allocate ip (y/n): ' allocateip
+	if [[ $allocateip == 'y' ]]
+	then
+		elasticip=$(aws ec2 allocate-address --query "PublicIp" --output text)
+		echo "ip: $elasticip" | tee -a $LOGFILE
+	else
+		while [[ -z $elasticip ]]
+		do
+			read -p '###
+enter ip: ' elasticip
+		done
+	fi
+done
+
+# ensure dns and/or add to /etc/hosts
+while [[ -z $dnscheck ]]
+do
+	read -p 'vm name: ' vmname
+	systemd-resolve $vmname
+	if [[ $? -eq 0 ]]
+	then
+		echo 'dns ok'
+		dnscheck=0
+	else
+		dnscheck=1
+		while [[ -z $addtohosts ]]
+		do
+			read -p "add $vmname $elasticip to /etc/hosts (y/n)? " addtohosts
+			if [[ $addtohosts == 'y' ]]
+			then
+				echo "$elasticip $vmname # create-ec2" | sudo tee -a /etc/hosts
+			fi
+		done
+	fi
+done
+
+# subnet
+aws ec2 describe-subnets --query "Subnets[*].[SubnetId, CidrBlock, Tags[?Key==\`Name\`] | [0].Value] | sort_by(@, &[1])" --output text
+subnetcheck=1
+while [[ $subnetcheck -ne 0 ]]
+do
+        read -p '###
+subnet id: ' subnet
+        aws ec2 describe-subnets --query "Subnets[*].[SubnetId] | sort_by(@, &[0])" --output text | grep --quiet $subnet
+        subnetcheck=$(echo $?)
+done
+
+# key pair
+aws ec2 describe-key-pairs --query "KeyPairs[*].[KeyName]" --output text
+keypaircheck=1
+while [[ $keypaircheck -ne 0 ]]
+do
+	read -p '###
+keypair name: ' keypair
+	aws ec2 describe-key-pairs --query "KeyPairs[*].[KeyName]" --output text | grep --quiet $keypair
+	keypaircheck=$(echo $?)
+done
+
+# securitygroup
+aws ec2 describe-security-groups --query "SecurityGroups[*].[GroupId, Tags[?Key==\`Name\`] | [0].Value]" --output text
+secgroupcheck=1
+while [[ $secgroupcheck -ne 0 ]]
+do
+	read -p '###
+securitygroup id: ' secgroup
+	aws ec2 describe-security-groups --query "SecurityGroups[*].[GroupId]" --output text | grep --quiet $secgroup
+	secgroupcheck=$(echo $?)
+done
+
+# amiid - latest official centos 7 uses the product code below
+amiid=$(aws ec2 describe-images --filters '{ "Name": "product-code", "Values": ["aw0evgkw8e5c1q413zgy5pjce"] }' --query 'Images[0].[ImageId]' --output=text)
+
+# instance type - aws pricing api is only available in two regions, so one is hardcoded
+aws pricing get-attribute-values --region us-east-1 --service-code AmazonEC2 --attribute-name instanceType --query 'AttributeValues[*].[Value]' --output=text
+
+instancetypecheck=1
+while [[ $instancetypecheck -ne 0 ]]
+do
+	read -p '###
+instance type: ' instancetype
+	aws pricing get-attribute-values --region us-east-1 --service-code AmazonEC2 --attribute-name instanceType --query 'AttributeValues[*].[Value]' --output=text | grep --quiet $instancetype
+	instancetypecheck=$(echo $?)
+done
+
+# overview
+echo "input summary
+$vmname
+$amiid
+$secgroup
+$keypair
+$subnet
+$instancetype
+$elasticip"
+
+# build
+echo
+read -p 'ready? type "y" to create ec2 instance: ' userready
+if [[ $userready != 'y' ]]
+then
+        echo 'not ready, exiting'
+        exit 1
+fi
+
+# create the ec2 instance submission
+echo
+echo $($LOGTIME) 'aws ec2 run-instances submitting task' | tee -a $LOGFILE
+
+# notify slack
+#curl --silent --header "Content-Type: application/json" --request POST --data "{ 'text': '$USER creating $vmname as $instancetype $aminame', 'username': '$(hostname -s)' }" {{ slackhookurl }}
+
+# submit aws task
+instanceid=$(aws ec2 run-instances --image-id $amiid --count 1 --instance-type $instancetype --security-group-ids $secgroup --key-name "$keypair" --subnet-id $subnet --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=$vmname}]" --query 'Instances[*].[InstanceId]' --output=text)
+
+echo $($LOGTIME) "aws ec2 run-instances submitted, assigning $elasticip to instanceid $instanceid" | tee -a $LOGFILE
+aws ec2 associate-address --instance-id $instanceid --public-ip $elasticip
+
+# done
+echo $($LOGTIME) 'complete, exiting' | tee -a $LOGFILE
+exit 0
+
