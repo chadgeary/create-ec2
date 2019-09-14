@@ -9,7 +9,7 @@ pip3 --user install awscli
 ```
 aws configure
 ```
-  - imported aws public key, e.g.:
+  - imported public key (rsa 4096+ bits), e.g.:
 ```
 aws ec2 import-key-pair --key-name "$USER"_$(date +"%F_%H-%M-%S") --public-key-material file://~/.ssh/id_rsa.pub
 ```
